@@ -53,6 +53,10 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { platform } from "node:os";
 import { withTaskRuntime } from "../effect/task-runtime";
+import {
+  buildCurrentLoopIterations,
+  getCurrentIterationValue,
+} from "../utils/loop-scope";
 
 /**
  * Track which worktree paths have already been created this run so we don't
@@ -800,6 +804,13 @@ function ralphIterationsObject(state: RalphStateMap): Record<string, number> {
     obj[id] = value.iteration ?? 0;
   }
   return obj;
+}
+
+function buildCurrentContextIterations(
+  state: RalphStateMap,
+  loopScopeMap: Record<string, string[]>,
+): Record<string, number> {
+  return buildCurrentLoopIterations(loopScopeMap, ralphIterationsObject(state));
 }
 
 function buildRalphDoneMap(
@@ -2381,6 +2392,8 @@ async function runWorkflowBody<Schema>(
     const disabledAgents = new Set<any>();
     const renderer = new SmithersRenderer();
     let frameNo = (await adapter.getLastFrame(runId))?.frameNo ?? 0;
+    let loopScopeMap: Record<string, string[]> = {};
+    let taskScopeMap: Record<string, import("../utils/loop-scope").TaskScopeInfo> = {};
     let defaultIteration = 0;
     // Track in-flight task promises across loop iterations so we
     // wait for them before declaring the run finished.
@@ -2507,17 +2520,31 @@ async function runWorkflowBody<Schema>(
       const inputRow = await loadInput(db, inputTable, runId);
       const outputs = await loadOutputs(db, schema, runId);
       const ralphIterations = ralphIterationsFromState(ralphState);
+      const currentIterations =
+        Object.keys(loopScopeMap).length > 0
+          ? buildCurrentContextIterations(ralphState, loopScopeMap)
+          : ralphIterationsObject(ralphState);
+      if (Object.keys(loopScopeMap).length > 0) {
+        defaultIteration = getCurrentIterationValue(loopScopeMap, currentIterations);
+      }
 
       const ctx = buildContext<Schema>({
         runId,
         iteration: defaultIteration,
-        iterations: ralphIterationsObject(ralphState),
+        iterations: currentIterations,
+        taskScopeMap,
         input: inputRow,
         outputs,
         zodToKeyName: workflow.zodToKeyName,
       });
 
-      const { xml, tasks, mountedTaskIds } = await renderer.render(
+      const {
+        xml,
+        tasks,
+        mountedTaskIds,
+        loopScopeMap: nextLoopScopeMap,
+        taskScopeMap: nextTaskScopeMap,
+      } = await renderer.render(
         workflowRef.build(ctx),
         {
           ralphIterations,
@@ -2527,6 +2554,8 @@ async function runWorkflowBody<Schema>(
       );
       const xmlJson = canonicalizeXml(xml);
       const xmlHash = sha256Hex(xmlJson);
+      loopScopeMap = nextLoopScopeMap;
+      taskScopeMap = nextTaskScopeMap;
 
       // Resolve output tasks: ZodObject references via zodToKeyName, string keys via schemaRegistry
       resolveTaskOutputs(tasks, workflow);
@@ -2592,9 +2621,7 @@ async function runWorkflowBody<Schema>(
           });
         }
       }
-      if (ralphs.length === 1) {
-        defaultIteration = ralphState.get(ralphs[0]!.id)?.iteration ?? 0;
-      } else if (ralphs.length === 0) {
+      if (ralphs.length === 0) {
         defaultIteration = 0;
       }
       const singleRalphId = ralphs.length === 1 ? ralphs[0]!.id : null;

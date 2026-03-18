@@ -7,6 +7,12 @@ import {
   DEFAULT_MERGE_QUEUE_CONCURRENCY,
   WORKTREE_EMPTY_PATH_ERROR,
 } from "../constants";
+import {
+  scopeLoopId,
+  scopeTaskId,
+  type LoopScopeEntry,
+  type TaskScopeInfo,
+} from "../utils/loop-scope";
 
 export type HostNode = HostElement | HostText;
 
@@ -27,6 +33,8 @@ export type ExtractResult = {
   xml: XmlNode | null;
   tasks: TaskDescriptor[];
   mountedTaskIds: string[];
+  loopScopeMap: Record<string, string[]>;
+  taskScopeMap: Record<string, TaskScopeInfo>;
 };
 
 export type ExtractOptions = {
@@ -83,14 +91,23 @@ export function extractFromHost(
   opts?: ExtractOptions,
 ): ExtractResult {
   if (!root) {
-    return { xml: null, tasks: [], mountedTaskIds: [] };
+    return {
+      xml: null,
+      tasks: [],
+      mountedTaskIds: [],
+      loopScopeMap: {},
+      taskScopeMap: {},
+    };
   }
 
   const tasks: TaskDescriptor[] = [];
   const mountedTaskIds: string[] = [];
+  const loopScopeMap: Record<string, string[]> = {};
+  const taskScopeMap: Record<string, TaskScopeInfo> = {};
   const seen = new Set<string>();
   const seenRalph = new Set<string>();
   const seenWorktree = new Set<string>();
+  const logicalToScopedTaskId = new Map<string, string>();
   let ordinal = 0;
 
   function pushGroup(
@@ -128,6 +145,8 @@ export function extractFromHost(
       path: number[];
       iteration: number;
       ralphId?: string;
+      parentIsRalph?: boolean;
+      loopStack: LoopScopeEntry[];
       parallelStack: { id: string; max?: number }[];
       /**
        * Stack of active <Worktree> contexts (outermost -> innermost).
@@ -141,19 +160,24 @@ export function extractFromHost(
     let iteration = ctx.iteration;
     const parallelStack = ctx.parallelStack;
     let ralphId = ctx.ralphId;
+    let loopStack = ctx.loopStack;
     const worktreeStack = ctx.worktreeStack;
 
     if (node.tag === "smithers:ralph") {
-      if (ralphId) {
+      if (ctx.parentIsRalph) {
         throw new Error("Nested <Ralph> is not supported.");
       }
-      const id = resolveStableId(node.rawProps?.id, "ralph", ctx.path);
-      if (seenRalph.has(id)) {
-        throw new Error(`Duplicate Ralph id detected: ${id}`);
+      const logicalId = resolveStableId(node.rawProps?.id, "ralph", ctx.path);
+      if (seenRalph.has(logicalId)) {
+        throw new Error(`Duplicate Ralph id detected: ${logicalId}`);
       }
-      seenRalph.add(id);
-      ralphId = id;
-      iteration = getRalphIteration(opts, id);
+      seenRalph.add(logicalId);
+      loopScopeMap[logicalId] = loopStack.map((entry) => entry.logicalId);
+      const scopedId = scopeLoopId(logicalId, loopStack);
+      node.props.id = scopedId;
+      ralphId = scopedId;
+      iteration = getRalphIteration(opts, scopedId);
+      loopStack = [...loopStack, { logicalId, iteration }];
     }
 
     let nextParallelStack = parallelStack;
@@ -199,18 +223,29 @@ export function extractFromHost(
     }
     if (node.tag === "smithers:task") {
       const raw = node.rawProps || {};
-      const nodeId = raw.id;
-      if (!nodeId || typeof nodeId !== "string") {
+      const logicalNodeId = raw.id;
+      if (!logicalNodeId || typeof logicalNodeId !== "string") {
         throw new Error("Task id is required and must be a string.");
       }
-      if (seen.has(nodeId)) {
-        throw new Error(`Duplicate Task id detected: ${nodeId}`);
+      if (seen.has(logicalNodeId)) {
+        throw new Error(`Duplicate Task id detected: ${logicalNodeId}`);
       }
-      seen.add(nodeId);
+      seen.add(logicalNodeId);
+
+      const currentLoop = loopStack[loopStack.length - 1];
+      const ancestorLoops = currentLoop ? loopStack.slice(0, -1) : loopStack;
+      const scopedNodeId = scopeTaskId(logicalNodeId, ancestorLoops);
+      const taskScope: TaskScopeInfo = {
+        ancestorLoopIds: ancestorLoops.map((loop) => loop.logicalId),
+        ownLoopId: currentLoop?.logicalId,
+      };
+      taskScopeMap[logicalNodeId] = taskScope;
+      logicalToScopedTaskId.set(logicalNodeId, scopedNodeId);
+      node.props.id = scopedNodeId;
 
       const outputRaw = raw.output;
       if (!outputRaw) {
-        throw new Error(`Task ${nodeId} is missing output.`);
+        throw new Error(`Task ${logicalNodeId} is missing output.`);
       }
 
       const outputTable: any = isDrizzleTable(outputRaw) ? outputRaw : null;
@@ -273,10 +308,12 @@ export function extractFromHost(
 
       const topWorktree = nextWorktreeStack[nextWorktreeStack.length - 1];
       const descriptor: TaskDescriptor = {
-        nodeId,
+        nodeId: scopedNodeId,
+        logicalNodeId,
         ordinal: ordinal++,
         iteration,
         ralphId,
+        taskScope,
         worktreeId: topWorktree?.id,
         worktreePath: topWorktree?.path,
         worktreeBranch: topWorktree?.branch,
@@ -308,7 +345,7 @@ export function extractFromHost(
       // Worktree path is captured in typed fields (worktreeId/worktreePath) and
       // consumed by the engine; avoid attaching untyped ad-hoc properties.
       tasks.push(descriptor);
-      mountedTaskIds.push(`${nodeId}::${iteration}`);
+      mountedTaskIds.push(`${scopedNodeId}::${iteration}`);
     }
 
     let elementIndex = 0;
@@ -319,13 +356,28 @@ export function extractFromHost(
         path: nextPath,
         iteration,
         ralphId,
+        parentIsRalph: node.tag === "smithers:ralph",
+        loopStack,
         parallelStack: nextParallelStack,
         worktreeStack: nextWorktreeStack,
       });
     }
   }
 
-  walk(root, { path: [], iteration: 0, parallelStack: [], worktreeStack: [] });
+  walk(root, {
+    path: [],
+    iteration: 0,
+    loopStack: [],
+    parallelStack: [],
+    worktreeStack: [],
+  });
 
-  return { xml: toXmlNode(root), tasks, mountedTaskIds };
+  for (const task of tasks) {
+    if (!task.dependsOn) continue;
+    task.dependsOn = task.dependsOn.map(
+      (dependencyId) => logicalToScopedTaskId.get(dependencyId) ?? dependencyId,
+    );
+  }
+
+  return { xml: toXmlNode(root), tasks, mountedTaskIds, loopScopeMap, taskScopeMap };
 }

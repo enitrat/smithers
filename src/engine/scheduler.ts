@@ -64,12 +64,12 @@ export function buildPlanTree(xml: XmlNode | null): {
 
   function walk(
     node: XmlNode,
-    ctx: { path: number[]; inRalph: boolean },
+    ctx: { path: number[]; parentIsRalph: boolean },
   ): PlanNode | null {
     if (node.kind === "text") return null;
     const tag = node.tag;
 
-    if (ctx.inRalph && tag === "smithers:ralph") {
+    if (ctx.parentIsRalph && tag === "smithers:ralph") {
       throw new Error("Nested <Ralph> is not supported.");
     }
 
@@ -78,8 +78,10 @@ export function buildPlanTree(xml: XmlNode | null): {
     for (const child of node.children) {
       const nextPath =
         child.kind === "element" ? [...ctx.path, elementIndex++] : ctx.path;
-      const nextInRalph = ctx.inRalph || tag === "smithers:ralph";
-      const built = walk(child, { path: nextPath, inRalph: nextInRalph });
+      const built = walk(child, {
+        path: nextPath,
+        parentIsRalph: tag === "smithers:ralph",
+      });
       if (built) children.push(built);
     }
 
@@ -133,7 +135,7 @@ export function buildPlanTree(xml: XmlNode | null): {
     return { kind: "group", children };
   }
 
-  const plan = walk(xml, { path: [], inRalph: false });
+  const plan = walk(xml, { path: [], parentIsRalph: false });
   return { plan, ralphs };
 }
 

@@ -94,6 +94,57 @@ describe("Ralph iteration", () => {
     expect(result.status).toBe("failed");
     cleanup();
   });
+
+  test("nested Ralph through sequence scopes inner loop per outer iteration", async () => {
+    const { smithers, outputs, tables, db, cleanup } = buildSmithers();
+    const workflow = smithers((ctx) => {
+      const outerDone = (ctx.latest("outputB", "outerTask")?.value ?? -1) >= 1;
+      const innerDone = (ctx.latest("outputA", "innerTask")?.value ?? -1) >= 1;
+
+      return (
+        <Workflow name="nested-indirect">
+          <Ralph id="outer" until={outerDone} maxIterations={3}>
+            <Sequence>
+              <Ralph id="inner" until={innerDone} maxIterations={3}>
+                <Task id="innerTask" output={outputs.outputA}>
+                  {{ value: ctx.iterations?.["inner"] ?? ctx.iteration }}
+                </Task>
+              </Ralph>
+              <Task id="outerTask" output={outputs.outputB}>
+                {{ value: ctx.iterations?.["outer"] ?? 0 }}
+              </Task>
+            </Sequence>
+          </Ralph>
+        </Workflow>
+      );
+    });
+
+    const result = await runWorkflow(workflow, { input: {} });
+    expect(result.status).toBe("finished");
+
+    const innerRows = await (db as any).select().from(tables.outputA);
+    const outerRows = await (db as any).select().from(tables.outputB);
+
+    expect(
+      innerRows
+        .map((row: any) => `${row.nodeId}:${row.iteration}:${row.value}`)
+        .sort(),
+    ).toEqual([
+      "innerTask@@outer=0:0:0",
+      "innerTask@@outer=0:1:1",
+      "innerTask@@outer=1:0:0",
+      "innerTask@@outer=1:1:1",
+    ]);
+    expect(
+      outerRows
+        .map((row: any) => `${row.nodeId}:${row.iteration}:${row.value}`)
+        .sort(),
+    ).toEqual([
+      "outerTask:0:0",
+      "outerTask:1:1",
+    ]);
+    cleanup();
+  });
 });
 
 describe("Parallel concurrency", () => {

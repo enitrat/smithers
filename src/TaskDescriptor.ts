@@ -1,12 +1,15 @@
 import type { AgentLike } from "./AgentLike";
 import type { CachePolicy } from "./CachePolicy";
 import type { RetryPolicy } from "./RetryPolicy";
+import type { TaskScopeInfo } from "./utils/loop-scope";
 
 export type TaskDescriptor = {
   nodeId: string;
+  logicalNodeId: string;
   ordinal: number;
   iteration: number;
   ralphId?: string;
+  taskScope?: TaskScopeInfo;
   dependsOn?: string[];
   needs?: Record<string, string>;
   worktreeId?: string;

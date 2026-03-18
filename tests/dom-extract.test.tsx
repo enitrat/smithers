@@ -87,6 +87,33 @@ describe("extractFromHost", () => {
     expect(() => extractFromHost(root)).toThrow("Nested <Ralph>");
   });
 
+  test("allows indirect nested ralph through sequence", () => {
+    const root = hostEl("smithers:ralph", { id: "outer" }, [
+      hostEl("smithers:sequence", {}, [
+        hostEl("smithers:ralph", { id: "inner" }, [
+          hostEl("smithers:task", { id: "t1", output: "t" }),
+        ]),
+      ]),
+    ]);
+
+    const result = extractFromHost(root, {
+      ralphIterations: { outer: 1, "inner@@outer=1": 2 },
+    });
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].logicalNodeId).toBe("t1");
+    expect(result.tasks[0].nodeId).toBe("t1@@outer=1");
+    expect(result.tasks[0].iteration).toBe(2);
+    expect(result.loopScopeMap).toEqual({
+      outer: [],
+      inner: ["outer"],
+    });
+    expect(result.taskScopeMap.t1).toEqual({
+      ancestorLoopIds: ["outer"],
+      ownLoopId: "inner",
+    });
+  });
+
   test("throws on duplicate ralph id", () => {
     const root = hostEl("smithers:workflow", {}, [
       hostEl("smithers:ralph", { id: "loop" }, [

@@ -113,6 +113,27 @@ describe("buildContext", () => {
     expect(ctx.iterationCount("tbl", "n")).toBe(0);
   });
 
+  test("scope-aware lookup resolves nested loop task ids", () => {
+    const rows = [
+      { nodeId: "innerTask@@outer=0", iteration: 0, value: 10 },
+      { nodeId: "innerTask@@outer=0", iteration: 1, value: 11 },
+      { nodeId: "innerTask@@outer=1", iteration: 0, value: 20 },
+    ];
+    const ctx = buildContext({
+      runId: "r1",
+      iteration: 0,
+      iterations: { outer: 0, inner: 1 },
+      taskScopeMap: {
+        innerTask: { ancestorLoopIds: ["outer"], ownLoopId: "inner" },
+      },
+      input: {},
+      outputs: { tbl: rows },
+    });
+    expect(ctx.output("tbl", { nodeId: "innerTask" })).toBe(rows[1]);
+    expect(ctx.latest("tbl", "innerTask")).toBe(rows[1]);
+    expect(ctx.iterationCount("tbl", "innerTask")).toBe(2);
+  });
+
   test("outputs function returns rows for table key", () => {
     const rows = [{ nodeId: "a", iteration: 0 }];
     const ctx = buildContext({

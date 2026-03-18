@@ -2,6 +2,8 @@ import React from "react";
 import { getTableName } from "drizzle-orm";
 import type { SmithersCtx } from "./SmithersCtx";
 import type { OutputKey } from "./OutputKey";
+import type { TaskScopeInfo } from "./utils/loop-scope";
+import { getScopedTaskNodeId } from "./utils/loop-scope";
 
 export type OutputSnapshot = {
   [tableName: string]: Array<any>;
@@ -29,11 +31,20 @@ export function buildContext<Schema>(opts: {
   runId: string;
   iteration: number;
   iterations?: Record<string, number>;
+  taskScopeMap?: Record<string, TaskScopeInfo>;
   input: any;
   outputs: OutputSnapshot;
   zodToKeyName?: Map<any, string>;
 }): SmithersCtx<Schema> {
-  const { runId, iteration, iterations, input, outputs, zodToKeyName } = opts;
+  const {
+    runId,
+    iteration,
+    iterations,
+    taskScopeMap,
+    input,
+    outputs,
+    zodToKeyName,
+  } = opts;
   const normalizedInput = normalizeInputRow(input);
 
   const outputsFn: any = (table: string) => {
@@ -59,12 +70,25 @@ export function buildContext<Schema>(opts: {
     return String(table);
   }
 
+  function resolveNodeId(nodeId: string): string {
+    return getScopedTaskNodeId(nodeId, taskScopeMap?.[nodeId], iterations);
+  }
+
+  function resolveIteration(nodeId: string, explicitIteration?: number): number {
+    if (typeof explicitIteration === "number") return explicitIteration;
+    const ownLoopId = taskScopeMap?.[nodeId]?.ownLoopId;
+    if (ownLoopId) return iterations?.[ownLoopId] ?? 0;
+    return iteration;
+  }
+
   function resolveRow<T>(table: any, key: OutputKey): T | undefined {
     const tableName = resolveTableName(table);
     const rows = outputs[tableName] ?? [];
+    const scopedNodeId = resolveNodeId(key.nodeId);
+    const targetIteration = resolveIteration(key.nodeId, key.iteration);
     return rows.find((row) => {
-      if (row.nodeId !== key.nodeId) return false;
-      return (row.iteration ?? 0) === (key.iteration ?? iteration);
+      if (row.nodeId !== scopedNodeId) return false;
+      return (row.iteration ?? 0) === targetIteration;
     });
   }
 
@@ -89,10 +113,11 @@ export function buildContext<Schema>(opts: {
     latest(table: any, nodeId: string): any {
       const tableName = resolveTableName(table);
       const tableRows = outputs[tableName] ?? [];
+      const scopedNodeId = resolveNodeId(nodeId);
       let best: any = undefined;
       let bestIteration = -Infinity;
       for (const row of tableRows) {
-        if (!row || row.nodeId !== nodeId) continue;
+        if (!row || row.nodeId !== scopedNodeId) continue;
         const iter = Number.isFinite(Number(row.iteration))
           ? Number(row.iteration)
           : 0;
@@ -130,9 +155,10 @@ export function buildContext<Schema>(opts: {
     iterationCount(table: any, nodeId: string): number {
       const tableName = resolveTableName(table);
       const tableRows = outputs[tableName] ?? [];
+      const scopedNodeId = resolveNodeId(nodeId);
       const seen = new Set<number>();
       for (const row of tableRows) {
-        if (!row || row.nodeId !== nodeId) continue;
+        if (!row || row.nodeId !== scopedNodeId) continue;
         const iter = Number.isFinite(Number(row.iteration))
           ? Number(row.iteration)
           : 0;

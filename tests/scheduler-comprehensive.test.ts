@@ -16,8 +16,10 @@ function desc(
 ): TaskDescriptor {
   return {
     nodeId,
+    logicalNodeId: nodeId,
     ordinal: 0,
     iteration: 0,
+    taskScope: undefined,
     outputTable: null,
     outputTableName: "",
     outputRef: undefined,
@@ -122,6 +124,22 @@ describe("buildPlanTree", () => {
       ]),
     ]);
     expect(() => buildPlanTree(xml)).toThrow("Nested <Ralph>");
+  });
+
+  test("allows indirect nested ralph through sequence", () => {
+    const xml = el("smithers:ralph", { id: "outer" }, [
+      el("smithers:sequence", {}, [
+        el("smithers:ralph", { id: "inner@@outer=0" }, [
+          el("smithers:task", { id: "t1@@outer=0" }),
+        ]),
+      ]),
+    ]);
+    const { plan, ralphs } = buildPlanTree(xml);
+    expect(plan).toBeDefined();
+    expect(ralphs.map((ralph) => ralph.id).sort()).toEqual([
+      "inner@@outer=0",
+      "outer",
+    ]);
   });
 
   test("throws on duplicate ralph id", () => {
