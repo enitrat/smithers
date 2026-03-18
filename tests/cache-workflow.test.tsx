@@ -1,6 +1,6 @@
 /** @jsxImportSource smithers */
 import { describe, expect, test } from "bun:test";
-import { Workflow, Task, runWorkflow } from "../src/index";
+import { Workflow, Task, Loop, runWorkflow } from "../src/index";
 import { createTestSmithers } from "./helpers";
 import { z } from "zod";
 
@@ -101,6 +101,41 @@ describe("workflow caching", () => {
     const r2 = await runWorkflow(workflow, { input: {}, runId: "r2" });
     expect(r1.status).toBe("finished");
     expect(r2.status).toBe("finished");
+    cleanup();
+  });
+
+  test("cache does not reuse loop-owned task outputs across iterations", async () => {
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      out: z.object({ v: z.number() }),
+    });
+
+    let calls = 0;
+    const agent: any = {
+      id: "loop-cache",
+      tools: {},
+      generate: async () => {
+        calls += 1;
+        return { output: { v: calls } };
+      },
+    };
+
+    const workflow = smithers((ctx) => (
+      <Workflow name="loop-cache" cache>
+        <Loop
+          id="review-loop"
+          until={ctx.iterationCount("out", "review-task") >= 2}
+          maxIterations={3}
+        >
+          <Task id="review-task" output={outputs.out} agent={agent}>
+            Same prompt
+          </Task>
+        </Loop>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, { input: {}, runId: "loop-cache-run" });
+    expect(result.status).toBe("finished");
+    expect(calls).toBe(2);
     cleanup();
   });
 });

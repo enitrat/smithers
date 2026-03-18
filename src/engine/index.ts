@@ -1381,6 +1381,7 @@ async function executeTask(
         cacheBase = {
           workflowName,
           nodeId: desc.nodeId,
+          iteration: desc.iteration,
           outputTableName: desc.outputTableName,
           schemaSig,
           outputSchemaSig,
@@ -1394,6 +1395,7 @@ async function executeTask(
         cacheBase = {
           workflowName,
           nodeId: desc.nodeId,
+          iteration: desc.iteration,
           outputTableName: desc.outputTableName,
           schemaSig,
           outputSchemaSig,
