@@ -122,8 +122,8 @@ function findVcsRoot(startDir: string): { type: "git" | "jj"; root: string } | n
   let dir = resolve(startDir);
   const { root: fsRoot } = require("node:path").parse(dir);
   while (true) {
-    if (existsSync(resolve(dir, ".git"))) return { type: "git", root: dir };
     if (existsSync(resolve(dir, ".jj"))) return { type: "jj", root: dir };
+    if (existsSync(resolve(dir, ".git"))) return { type: "git", root: dir };
     const parent = dirname(dir);
     if (parent === dir || dir === fsRoot) return null;
     dir = parent;
